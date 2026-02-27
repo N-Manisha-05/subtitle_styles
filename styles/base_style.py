@@ -3,7 +3,7 @@ from utils.ass_formatter import get_ass_header
 from utils.srt_parser import process_srt
 
 class BaseStyle(ABC):
-    def __init__(self, font_name="Noto Sans Telugu", font_size=26):
+    def __init__(self, font_name="Noto Sans Telugu", font_size=34):
         self.font_name = font_name
         self.font_size = font_size
 
