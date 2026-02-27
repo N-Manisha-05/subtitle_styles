@@ -28,8 +28,17 @@ class ElevateStyle(BaseStyle):
                         if i == w_idx:
                             # Pop effect: start 100%, grow to 120%, back to 100%
                             pop_time = min(200, int(word_dur * 500))
-                            tag = f"{{\\1c{yellow}\\fscx100\\fscy100\\t(0,{pop_time},\\fscx120\\fscy120)\\t({pop_time},{pop_time*2},\\fscx100\\fscy100)}}"
-                            line_parts.append(f"{tag}{word}{{\\1c{white}\\fscx100\\fscy100}}")
+
+                            tag = (
+                                f"{{\\1c{yellow}"
+                                f"\\t(0,{pop_time},\\fscx108\\fscy108)"
+                                f"\\t(0,{pop_time},\\shad5)"
+                                f"}}"
+                            )
+
+                            reset = f"{{\\1c{white}\\fscx100\\fscy100\\shad2}}"
+
+                            line_parts.append(f"{tag}{word}{reset}")
                         else:
                             line_parts.append(word)
                     

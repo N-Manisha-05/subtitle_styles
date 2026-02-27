@@ -9,7 +9,7 @@ def format_ass_time(seconds):
     if m == 60: m = 0; h += 1
     return f"{h}:{m:02}:{s:02}.{cs:02}"
 
-def get_ass_header(font_name="Noto Sans Telugu", font_size=26):
+def get_ass_header(font_name="Noto Sans Telugu", font_size=40):
     """Return the standard ASS file header"""
     return f"""[Script Info]
 ScriptType: v4.00+

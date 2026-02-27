@@ -1,10 +1,12 @@
 import os
 import subprocess
 from styles.elevate_style import ElevateStyle
+from styles.word_append_style import WordAppendStyle
 
 # Registry for future animations
 STYLE_REGISTRY = {
     "elevate": ElevateStyle(),
+    "append": WordAppendStyle(),
     # "slide": SlideInStyle(),
     # "reveal": WordRevealStyle(),
 }
@@ -33,8 +35,8 @@ def main():
         print("Error: Ensure 'video.mp4' and 'subtitles.srt' are in 'inputs/' folder.")
         return
 
-    # For now, we only have 'elevate', but we can easily add a menu later
-    style_key = "elevate"
+
+    style_key = "append"
     selected_style = STYLE_REGISTRY[style_key]
     
     output_dir = "outputs"
