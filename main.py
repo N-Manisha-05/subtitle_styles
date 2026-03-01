@@ -2,6 +2,7 @@ import os
 import subprocess
 from styles.elevate_style import ElevateStyle
 from styles.word_append_style import WordAppendStyle
+from styles.highlight_style import HighlightStyle
 
 def burn_video(video_path, ass_path, output_path):
     """Hard-burn subtitles into video using FFmpeg"""
@@ -46,16 +47,18 @@ def main():
         font_size = int(size_input) if size_input.strip() else 70
     except ValueError:
         print("Invalid size, defaulting to 70.")
-        font_size = 40
+        font_size = 70
 
     # 3. Style Selection Menu
     styles = {
         "1": ("elevate", ElevateStyle),
         "2": ("append", WordAppendStyle),
+        "3": ("highlight", HighlightStyle),
     }
     print("\nAvailable Animation Styles:")
     print("1. Elevate (Pop effect)")
     print("2. Append (Sequential reveal)")
+    print("3. Highlight (Background boxes)")
     
     s_choice = input("\nSelect a style (number): ")
     style_info = styles.get(s_choice, ("append", WordAppendStyle))
