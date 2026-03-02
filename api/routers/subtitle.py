@@ -6,6 +6,7 @@ from starlette.background import BackgroundTask
 
 from api.helpers.temp import make_temp_dir, resolve_file, cleanup, make_output_path
 from api.helpers.ffmpeg import burn_subtitles
+from api.config import VALID_FONTS, DEFAULT_FONT, FONT_DESCRIPTION
 
 from styles.elevate_style import ElevateStyle
 from styles.word_append_style import WordAppendStyle
@@ -32,6 +33,12 @@ STYLE_MAP = {
 router = APIRouter(prefix="/subtitle", tags=["Subtitle"])
 
 
+@router.get("/fonts", summary="List available font families")
+def list_fonts():
+    """Returns the list of font families available for subtitle rendering."""
+    return {"fonts": VALID_FONTS}
+
+
 @router.post(
     "/burn",
     summary="Burn animated subtitles into a video",
@@ -45,13 +52,18 @@ async def burn_subtitle(
     srt:     Optional[UploadFile] = File(None, description="SRT subtitle file (file upload)"),
     srt_url: Optional[str]        = Form(None, description="SRT subtitle file (URL)"),
     # Style options
-    font_name: str = Form("Noto Sans Telugu", description="Font name"),
+    font_name: str = Form(DEFAULT_FONT, description=FONT_DESCRIPTION),
     font_size: int = Form(70, description="Font size in points"),
     style: str = Form("basic", description=(
         "Animation style: elevate | append | highlight | slide | "
         "oneword | basic | twoword | colorword | reveal"
     )),
 ):
+    if font_name not in VALID_FONTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown font '{font_name}'. Valid options: {', '.join(VALID_FONTS)}"
+        )
     style_class = STYLE_MAP.get(style.lower())
     if style_class is None:
         raise HTTPException(

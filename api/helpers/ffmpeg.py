@@ -21,6 +21,52 @@ def burn_subtitles(video_path: str, ass_path: str, output_path: str):
     ])
 
 
+def burn_subtitles_with_image(
+    video_path: str,
+    ass_path: str,
+    image_path: str,
+    output_path: str,
+    x: str = "10",
+    y: str = "10",
+    width: int = 200,
+    start_time: float = 0.0,
+    end_time: float = None,
+    fullscreen: bool = False,
+):
+    """
+    Single FFmpeg pass: overlay an image AND burn ASS subtitles simultaneously.
+    Filter chain: scale image → overlay on video → burn ASS subtitles.
+    """
+    abs_ass = os.path.abspath(ass_path)
+
+    if end_time is not None:
+        enable_expr = f"between(t,{start_time},{end_time})"
+    else:
+        enable_expr = f"gte(t,{start_time})"
+
+    if fullscreen:
+        scale_filter   = "[1:v][0:v]scale2ref=w=main_w:h=main_h[img][base]"
+        overlay_filter = f"[base][img]overlay=0:0:enable='{enable_expr}'"
+    else:
+        scale_filter   = f"[1:v]scale={width}:-1[img]"
+        overlay_filter = f"[0:v][img]overlay={x}:{y}:enable='{enable_expr}'"
+
+    filter_complex = (
+        f"{scale_filter};"
+        f"{overlay_filter}[overlaid];"
+        f"[overlaid]ass='{abs_ass}'"
+    )
+
+    run_ffmpeg([
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-i", image_path,
+        "-filter_complex", filter_complex,
+        "-c:a", "copy",
+        output_path
+    ])
+
+
 def overlay_image(
     video_path: str,
     image_path: str,
@@ -32,6 +78,7 @@ def overlay_image(
     end_time: float = None,
     fullscreen: bool = False,
 ):
+    """Overlay a scaled image onto a video at a given position and time range."""
     if end_time is not None:
         enable_expr = f"between(t,{start_time},{end_time})"
     else:
@@ -44,9 +91,9 @@ def overlay_image(
         )
     else:
         filter_complex = (
-        f"[1:v]scale={width}:-1[img];"
-        f"[0:v][img]overlay={x}:{y}:enable='{enable_expr}'"
-    )
+            f"[1:v]scale={width}:-1[img];"
+            f"[0:v][img]overlay={x}:{y}:enable='{enable_expr}'"
+        )
 
     run_ffmpeg([
         "ffmpeg", "-y",
@@ -56,6 +103,7 @@ def overlay_image(
         "-c:a", "copy",
         output_path
     ])
+
 
 def overlay_video(
     base_path: str,
@@ -73,14 +121,12 @@ def overlay_video(
     Supports fullscreen mode and timed appearance.
     Audio comes from base video only.
     """
-
     if end_time is not None:
         enable_expr = f"between(t,{start_time},{end_time})"
     else:
         enable_expr = f"gte(t,{start_time})"
 
     if fullscreen:
-        # Match overlay video resolution to base video
         filter_complex = (
             "[1:v][0:v]scale2ref=w=main_w:h=main_h[ovr][base];"
             f"[base][ovr]overlay=0:0:enable='{enable_expr}'"
@@ -99,6 +145,7 @@ def overlay_video(
         "-map", "0:a?",
         output_path
     ])
+
 
 def mix_audio(
     video_path: str,

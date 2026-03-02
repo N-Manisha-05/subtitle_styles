@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from api.routers import subtitle, image, audio, video
+from api.routers import subtitle, image, audio, video, composite
 
 app = FastAPI(
     title="Subtitle & Media Toolkit API",
@@ -14,6 +14,7 @@ app.include_router(subtitle.router)
 app.include_router(image.router)
 app.include_router(audio.router)
 app.include_router(video.router)
+app.include_router(composite.router)
 
 
 @app.get("/", tags=["Health"])

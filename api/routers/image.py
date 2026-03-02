@@ -17,7 +17,6 @@ POSITION_PRESETS = {
     "bottom-left":  ("10",          "H-h-10"),
     "bottom-right": ("W-w-10",      "H-h-10"),
     "center":       ("(W-w)/2",     "(H-h)/2"),
-    # fullscreen is handled separately in the route logic
     "fullscreen":   None,
 }
 DEFAULT_POSITION = "top-right"
@@ -52,7 +51,7 @@ async def image_overlay(
     # Resolve position
     use_fullscreen = position.lower() == "fullscreen"
     if use_fullscreen:
-        overlay_x, overlay_y = "0", "0"   # ignored by ffmpeg helper in fullscreen mode
+        overlay_x, overlay_y = "0", "0"
     elif position == "custom":
         overlay_x, overlay_y = str(x), str(y)
     else:
