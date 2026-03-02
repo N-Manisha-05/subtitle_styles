@@ -8,6 +8,7 @@ from styles.one_word_style import OneWordStyle
 from styles.basic_style import BasicStyle
 from styles.two_word_style import TwoWordStyle
 from styles.color_word_style import ColorWordStyle
+from styles.reveal_style import RevealStyle
 
 def burn_video(video_path, ass_path, output_path):
     """Hard-burn subtitles into video using FFmpeg"""
@@ -64,6 +65,7 @@ def main():
         "6": ("basic", BasicStyle),
         "7": ("twoword", TwoWordStyle),
         "8": ("colorword", ColorWordStyle),
+        "9": ("reveal", RevealStyle),
     }
     print("\nAvailable Animation Styles:")
     print("1. Elevate    (Pop effect)")
@@ -74,6 +76,7 @@ def main():
     print("6. Basic      (Plain subtitles, no animation)")
     print("7. Two Words  (Two words at a time)")
     print("8. Color Word (All words visible, active word in color)")
+    print("9. Reveal     (All words shown: dim → active → bright)")
     
     s_choice = input("\nSelect a style (number): ")
     style_info = styles.get(s_choice, ("append", WordAppendStyle))
