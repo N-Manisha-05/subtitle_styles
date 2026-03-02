@@ -5,6 +5,9 @@ from styles.word_append_style import WordAppendStyle
 from styles.highlight_style import HighlightStyle
 from styles.slide_style import SlideStyle
 from styles.one_word_style import OneWordStyle
+from styles.basic_style import BasicStyle
+from styles.two_word_style import TwoWordStyle
+from styles.color_word_style import ColorWordStyle
 
 def burn_video(video_path, ass_path, output_path):
     """Hard-burn subtitles into video using FFmpeg"""
@@ -58,13 +61,19 @@ def main():
         "3": ("highlight", HighlightStyle),
         "4": ("slide", SlideStyle),
         "5": ("oneword", OneWordStyle),
+        "6": ("basic", BasicStyle),
+        "7": ("twoword", TwoWordStyle),
+        "8": ("colorword", ColorWordStyle),
     }
     print("\nAvailable Animation Styles:")
-    print("1. Elevate  (Pop effect)")
-    print("2. Append   (Sequential reveal)")
-    print("3. Highlight (Background boxes)")
-    print("4. Slide    (Slide in)")
-    print("5. One Word (One word at a time)")
+    print("1. Elevate    (Pop effect)")
+    print("2. Append     (Sequential reveal)")
+    print("3. Highlight  (Background boxes)")
+    print("4. Slide      (Slide in from below)")
+    print("5. One Word   (One word at a time)")
+    print("6. Basic      (Plain subtitles, no animation)")
+    print("7. Two Words  (Two words at a time)")
+    print("8. Color Word (All words visible, active word in color)")
     
     s_choice = input("\nSelect a style (number): ")
     style_info = styles.get(s_choice, ("append", WordAppendStyle))
