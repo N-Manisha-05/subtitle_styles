@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 from api.helpers.temp import make_temp_dir, resolve_file, cleanup, make_output_path
-from api.helpers.ffmpeg import burn_subtitles_with_image
+from api.helpers.ffmpeg import overlay_image, burn_subtitles
 from api.config import VALID_FONTS, DEFAULT_FONT, FONT_DESCRIPTION
 
 from styles.elevate_style import ElevateStyle
@@ -118,15 +118,22 @@ async def composite_burn(
         selected_style = style_class(font_name=font_name, font_size=font_size)
         selected_style.generate_ass(srt_path, ass_path)
 
-        # Single FFmpeg pass: image overlay + subtitle burn
-        burn_subtitles_with_image(
+        # Step 1: overlay image onto video
+        img_out = os.path.join(tmp, "after_image.mp4")
+        overlay_image(
             video_path=video_path,
-            ass_path=ass_path,
             image_path=image_path,
-            output_path=out_path,
+            output_path=img_out,
             x=overlay_x, y=overlay_y, width=img_width,
             start_time=img_start, end_time=img_end,
             fullscreen=use_fullscreen,
+        )
+
+        # Step 2: burn subtitles on top (last so text appears above image)
+        burn_subtitles(
+            video_path=img_out,
+            ass_path=ass_path,
+            output_path=out_path,
         )
     except HTTPException:
         cleanup(tmp)

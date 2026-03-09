@@ -63,7 +63,6 @@ class ImageOverlayItem(BaseModel):
       - `url`   — publicly accessible URL (.png / .jpg)
       - `index` — zero-based index into the `image_files` upload list
 
-    All other fields are optional and fall back to sensible defaults.
     """
 
     url: Optional[str] = Field(
@@ -79,7 +78,7 @@ class ImageOverlayItem(BaseModel):
         ),
     )
     position: str = Field(
-        "top-right",
+        "fullscreen",
         description=f"Named position preset: {POSITION_CHOICES}",
     )
     x: int = Field(10, description="X offset in pixels (only used when position='custom')")
@@ -124,7 +123,15 @@ class VideoOverlaySection(BaseModel):
 
 class AudioSection(BaseModel):
     """
-    Audio replace / mix section (used by the dedicated /audio endpoint).
+    Audio replace / mix section.
+
+    Supply the audio track via one of:
+      - `url`        — publicly accessible URL (.mp3 / .wav / .aac)
+      - `audio_file` — upload field in the multipart request
+
+    modes:
+      - `replace` — discard original video audio, use provided track
+      - `mix`     — blend both tracks together
     """
 
     url: Optional[str] = Field(None, description="Public URL to the audio file (.mp3/.wav/.aac)")
@@ -188,6 +195,13 @@ class ProcessRequest(BaseModel):
             "url": "https://example.com/overlay.mp4",
             "position": "bottom-right",
             "overlay_width": 300
+        },
+
+        "audio": {
+            "url": "https://example.com/bg-music.mp3",
+            "mode": "mix",
+            "audio_volume": 0.5,
+            "video_volume": 1.0
         }
     }
     """
@@ -211,4 +225,11 @@ class ProcessRequest(BaseModel):
     video_overlay: Optional[VideoOverlaySection] = Field(
         None,
         description="Video-on-video overlay options. Omit to skip video overlay.",
+    )
+    audio: Optional[AudioSection] = Field(
+        None,
+        description=(
+            "Audio replace/mix options. Omit to keep original video audio. "
+            "Supply audio via 'url' in this section or upload via 'audio_file' form field."
+        ),
     )

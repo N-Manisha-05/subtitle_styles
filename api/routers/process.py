@@ -27,6 +27,7 @@ from starlette.background import BackgroundTask
 from api.config import DEFAULT_FONT, VALID_FONTS
 from api.helpers.ffmpeg import (
     burn_subtitles,
+    mix_audio,
     overlay_image,
     overlay_video,
     rescale_video,
@@ -112,8 +113,11 @@ Send a **multipart/form-data** request with these fields:
 | `video` | file | Base video file *(one of video / video_url required)* |
 | `video_url` | string | Public URL of the base video |
 | `srt_file` | file | SRT subtitle file *(required when srt section present and no srt.url)* |
-| `image_files` | file[] | Uploaded images for overlays *(matched by index in image_overlays list)* |
+| `image_file_0` | file | First overlay image *(matched by index 0 in image_overlays list)* |
+| `image_file_1` | file | Second overlay image *(matched by index 1 in image_overlays list)* |
+| `image_file_2` | file | Third overlay image *(matched by index 2 in image_overlays list)* |
 | `overlay_file` | file | Overlay video file *(required when video_overlay section present and no url)* |
+| `audio_file` | file | Audio track (.mp3/.wav/.aac) *(required when audio section present and no audio.url)* |
 | `data` | JSON string | All structured options — see **ProcessRequest** model below |
 
 ### Minimal `data` (video only)
@@ -139,13 +143,18 @@ Send a **multipart/form-data** request with these fields:
     "url": "https://example.com/overlay.mp4",
     "position": "bottom-right",
     "overlay_width": 300
+  },
+  "audio": {
+    "url": "https://example.com/bg-music.mp3",
+    "mode": "mix",
+    "audio_volume": 0.5,
+    "video_volume": 1.0
   }
 }
 ```
 """,
 )
 async def process_video(
-    request: Request,
     # ── Base video ────────────────────────────────────────────────────────
     video: Optional[UploadFile] = File(
         None,
@@ -165,6 +174,20 @@ async def process_video(
         ),
     ),
 
+    # ── Image overlay file slots (index 0–2 ─ reference via image_overlays[].index) ──
+    image_file_0: Optional[UploadFile] = File(
+        None,
+        description="[IMAGE 0] First overlay image (.png/.jpg). Reference in data with \"index\": 0",
+    ),
+    image_file_1: Optional[UploadFile] = File(
+        None,
+        description="[IMAGE 1] Second overlay image (.png/.jpg). Reference in data with \"index\": 1",
+    ),
+    image_file_2: Optional[UploadFile] = File(
+        None,
+        description="[IMAGE 2] Third overlay image (.png/.jpg). Reference in data with \"index\": 2",
+    ),
+
     # ── Video overlay file ────────────────────────────────────────────────
     overlay_file: Optional[UploadFile] = File(
         None,
@@ -174,23 +197,30 @@ async def process_video(
         ),
     ),
 
+    # ── Audio file ────────────────────────────────────────────────────
+    audio_file: Optional[UploadFile] = File(
+        None,
+        description=(
+            "[AUDIO] Upload the audio track (.mp3 / .wav / .aac). "
+            "Required when the `audio` section is present in `data`"
+        ),
+    ),
+
     # ── Structured JSON options ───────────────────────────────────────────
     data: str = Form(
         "{}",
         description=(
             "JSON string containing all structured options. "
             "All keys are optional. "
-            "Keys: screen_resolution, srt, image_overlays, video_overlay. "
+            "Keys: screen_resolution, srt, image_overlays, video_overlay, audio. "
             "Pass `{}` or omit to apply no processing beyond returning the base video."
         ),
     ),
 ):
-    # ── Manually extract image_files from raw form (bypasses FastAPI's
-    #    List[UploadFile] validation that rejects empty strings sent by Swagger)
-    form_data = await request.form()
+    # ── Collect image upload slots into a list (None slots are skipped) ───────
     image_files: List[UploadFile] = [
-        v for _, v in form_data.multi_items()
-        if _ == "image_files" and hasattr(v, "filename") and v.filename
+        f for f in [image_file_0, image_file_1, image_file_2]
+        if _has_file(f)
     ]
 
     # ── Parse options JSON ────────────────────────────────────────────────
@@ -355,6 +385,34 @@ async def process_video(
             logger.info("[PROCESS] Video overlay applied -> %s", current)
         else:
             logger.info("[PROCESS] No video overlay requested.")
+
+        # ── AUDIO — applied after all video processing ─────────────────────────
+        if opts.audio is not None:
+            au = opts.audio
+            audio_has_upload = _has_file(audio_file)
+            logger.info("[PROCESS] Audio section detected | mode=%s source=%s",
+                        au.mode, "uploaded file" if audio_has_upload else f"URL={au.url}")
+            aud_path = await resolve_file(
+                audio_file if audio_has_upload else None,
+                au.url,
+                tmp,
+                "audio_track",
+                "audio_file / audio.url",
+            )
+            logger.info("[PROCESS] Audio file saved -> %s", aud_path)
+            aud_out = os.path.join(tmp, "after_audio.mp4")
+            mix_audio(
+                video_path=current,
+                audio_path=aud_path,
+                output_path=aud_out,
+                mode=au.mode,
+                audio_volume=au.audio_volume,
+                video_volume=au.video_volume,
+            )
+            current = aud_out
+            logger.info("[PROCESS] Audio applied -> %s", current)
+        else:
+            logger.info("[PROCESS] No audio section requested.")
 
         # ── SRT BURN — done LAST so subtitles appear on top of everything ─
         if ass_path is not None:
