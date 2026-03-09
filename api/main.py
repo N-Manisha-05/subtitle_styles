@@ -1,5 +1,12 @@
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
 from fastapi import FastAPI
-from api.routers import subtitle, image, audio, video, composite
+from api.routers import subtitle, image, audio, video, composite, process
 
 app = FastAPI(
     title="Subtitle & Media Toolkit API",
@@ -15,6 +22,7 @@ app.include_router(image.router)
 app.include_router(audio.router)
 app.include_router(video.router)
 app.include_router(composite.router)
+app.include_router(process.router)
 
 
 @app.get("/", tags=["Health"])

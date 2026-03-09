@@ -1,15 +1,35 @@
+import logging
 import subprocess
 import os
+
+logger = logging.getLogger(__name__)
 
 
 def run_ffmpeg(cmd: list[str]):
     """Run an ffmpeg command, raising RuntimeError on failure."""
+    logger.info("[FFMPEG] Running: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
+        logger.error("[FFMPEG] FAILED (exit %d):\n%s", result.returncode, result.stderr)
         raise RuntimeError(f"FFmpeg failed:\n{result.stderr}")
+    logger.info("[FFMPEG] Success (exit 0)")
+    if result.stderr:
+        logger.debug("[FFMPEG] stderr: %s", result.stderr[-500:])
+
+
+def rescale_video(input_path: str, output_path: str, width: int, height: int):
+    """Rescale a video to exact width×height pixels."""
+    run_ffmpeg([
+        "ffmpeg", "-y",
+        "-i", input_path,
+        "-vf", f"scale={width}:{height}",
+        "-c:a", "copy",
+        output_path,
+    ])
 
 
 def burn_subtitles(video_path: str, ass_path: str, output_path: str):
+
     """Hard-burn an ASS subtitle file into a video."""
     abs_ass = os.path.abspath(ass_path)
     run_ffmpeg([
