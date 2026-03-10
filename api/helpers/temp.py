@@ -13,7 +13,6 @@ OUTPUTS_DIR = os.path.abspath(
 )
 os.makedirs(OUTPUTS_DIR, exist_ok=True)
 
-
 def make_output_path(prefix: str, ext: str = "mp4") -> str:
     """
     Return a unique path inside outputs/ using a timestamp.
@@ -57,6 +56,7 @@ async def resolve_file(
     Raises HTTPException if neither is provided.
     Upload takes priority over URL if both are given.
     """
+    
     if upload is not None and upload.filename:
         return await save_upload(upload, dest_dir, saved_name)
     elif url:

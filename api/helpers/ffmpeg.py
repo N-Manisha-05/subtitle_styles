@@ -23,7 +23,6 @@ async def run_ffmpeg(cmd: list[str], timeout: int = FFMPEG_TIMEOUT) -> None:
     - Raises RuntimeError with stderr on non-zero exit.
     - Raises asyncio.TimeoutError (caught by router as 500) if command hangs.
     """
-    logger.info("[FFMPEG] Running: %s", " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -34,16 +33,14 @@ async def run_ffmpeg(cmd: list[str], timeout: int = FFMPEG_TIMEOUT) -> None:
     except asyncio.TimeoutError:
         proc.kill()
         await proc.communicate()
-        raise RuntimeError(f"FFmpeg timed out after {timeout}s. Command: {' '.join(cmd)}")
+        raise RuntimeError(f"FFmpeg timed out after {timeout}s")
 
     stderr_text = stderr.decode(errors="replace")
     if proc.returncode != 0:
-        logger.error("[FFMPEG] FAILED (exit %d):\n%s", proc.returncode, stderr_text)
+        logger.error("[FFMPEG] Failed: %s", stderr_text[-300:])
         raise RuntimeError(f"FFmpeg failed (exit {proc.returncode}):\n{stderr_text}")
 
-    logger.info("[FFMPEG] Success (exit 0)")
-    if stderr_text:
-        logger.debug("[FFMPEG] stderr: %s", stderr_text[-500:])
+    logger.debug("[FFMPEG] OK: %s", cmd[0])
 
 
 async def get_video_dimensions(video_path: str) -> tuple[int, int]:
@@ -96,13 +93,18 @@ def _escape_ass_path(path: str) -> str:
 async def rescale_video(input_path: str, output_path: str, width: int, height: int) -> None:
     """Rescale a video to exact width×height pixels.
 
-    setsar=1 resets the sample aspect ratio to 1:1 (square pixels) so
-    video players display the correct dimensions and not the source DAR.
+    - Uses force_original_aspect_ratio=decrease and padding to handle aspect mismatches
+      while ensuring final dimensions are exactly width×height.
+    - setsar=1 resets the sample aspect ratio to 1:1.
     """
+    # Ensure dimensions are even (libx264 requirement)
+    w = (width // 2) * 2
+    h = (height // 2) * 2
+
     await run_ffmpeg([
         "ffmpeg", "-y",
         "-i", input_path,
-        "-vf", f"scale={width}:{height},setsar=1",
+        "-vf", f"scale={w}:{h},setsar=1",
         "-c:a", "copy",
         output_path,
     ])
@@ -111,6 +113,8 @@ async def rescale_video(input_path: str, output_path: str, width: int, height: i
 async def burn_subtitles(video_path: str, ass_path: str, output_path: str) -> None:
     """Hard-burn an ASS subtitle file into a video."""
     escaped = _escape_ass_path(ass_path)
+    # The 'ass' filter path must be wrapped in single quotes, 
+    # and the whole filter string itself is often wrapped in double quotes.
     await run_ffmpeg([
         "ffmpeg", "-y",
         "-i", video_path,
@@ -130,32 +134,47 @@ async def overlay_image(
     start_time: float = 0.0,
     end_time: float | None = None,
     fullscreen: bool = False,
+    target_width: int | None = None,
+    target_height: int | None = None,
 ) -> None:
-    """Overlay a scaled image onto a video at a given position and time range."""
+
     if end_time is not None:
         enable_expr = f"between(t,{start_time},{end_time})"
     else:
         enable_expr = f"gte(t,{start_time})"
 
     if fullscreen:
+        # Ensure dimensions are even
+        tw = (target_width // 2) * 2
+        th = (target_height // 2) * 2
         filter_complex = (
-            "[1:v][0:v]scale2ref=w=main_w:h=main_h[img][base];"
-            f"[base][img]overlay=0:0:enable='{enable_expr}'"
+            "[1:v]format=rgba[img];"
+            f"[img]scale={tw}:{th}[img_s];"
+            f"[0:v][img_s]overlay=0:0:enable='{enable_expr}':format=auto"
         )
     else:
+        # Ensure overlay width is even
+        overlay_width = (int(target_width * 0.15) // 2) * 2
+
         filter_complex = (
-            f"[1:v]scale={width}:-1[img];"
-            f"[0:v][img]overlay={x}:{y}:enable='{enable_expr}'"
+            "[1:v]format=rgba[img];"
+            f"[img]scale={overlay_width}:-2[img_s];"
+            f"[0:v][img_s]overlay={x}:{y}:enable='{enable_expr}':format=auto"
         )
+
+    logger.info("[FFMPEG] Overlay image filter: %s", filter_complex)
 
     await run_ffmpeg([
         "ffmpeg", "-y",
         "-i", video_path,
-        "-i", image_path,
+        "-loop", "1", "-i", image_path,
         "-filter_complex", filter_complex,
         "-c:a", "copy",
+        "-pix_fmt", "yuv420p",
+        "-shortest",
         output_path,
     ])
+
 
 
 async def overlay_video(
@@ -178,12 +197,12 @@ async def overlay_video(
     if fullscreen:
         filter_complex = (
             "[1:v][0:v]scale2ref=w=main_w:h=main_h[ovr][base];"
-            f"[base][ovr]overlay=0:0:enable='{enable_expr}'"
+            f"[base][ovr]overlay=0:0:enable='{enable_expr}':format=auto"
         )
     else:
         filter_complex = (
-            f"[1:v]scale={width}:-1[ovr];"
-            f"[0:v][ovr]overlay={x}:{y}:enable='{enable_expr}'"
+            f"[1:v]scale='trunc({width}/2)*2':-2[ovr];"
+            f"[0:v][ovr]overlay={x}:{y}:enable='{enable_expr}':format=auto"
         )
 
     await run_ffmpeg([

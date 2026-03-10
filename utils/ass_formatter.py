@@ -10,10 +10,8 @@ def format_ass_time(seconds):
     return f"{h}:{m:02}:{s:02}.{cs:02}"
 
 def get_ass_header(font_name="Noto Sans Telugu", font_size=80, width=1920, height=1080):
-    """Return the standard ASS file header.
-    Pass actual video dimensions so subtitles position correctly
-    for any resolution (portrait, square, etc.)
-    """
+   
+    margin_v = int(height * 0.06)
     return f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -22,7 +20,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_name},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,40,1
-Style: Boxed,{font_name},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,40,1
-Style: Slide,{font_name},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,20,20,40,1
+Style: Default,{font_name},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,{margin_v},1
+Style: Boxed,{font_name},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,{margin_v},1
+Style: Slide,{font_name},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,20,20,{margin_v},1
 """

@@ -1,18 +1,3 @@
-"""
-Unified /process endpoint — one request, any combination of sections.
-
-Request format — multipart/form-data
-─────────────────────────────────────
-  video           UploadFile  (required if video_url omitted)
-  video_url       str         (required if video omitted)
-  srt_file        UploadFile  (required if srt.url omitted and srt section present)
-  image_file_0/1/2 UploadFile (matched to image_overlays[*].index)
-  overlay_file    UploadFile  (required if video_overlay.url omitted and section present)
-  audio_file      UploadFile  (required if audio.url omitted and audio section present)
-  data            str         JSON string with all structured options (see ProcessRequest)
-
-All sections inside `data` are optional.  Omit any section you don't need.
-"""
 
 import json
 import logging
@@ -178,22 +163,21 @@ async def process_video(
         None,
         description=(
             "[SRT] Upload the .srt subtitle file. "
-            "Required when the `srt` section is present in `data` and no `srt.url` is given."
         ),
     ),
 
     # ── Image overlay file slots (index 0–2 ─ reference via image_overlays[].index) ──
     image_file_0: Optional[UploadFile] = File(
         None,
-        description='[IMAGE 0] First overlay image (.png/.jpg). Reference in data with "index": 0',
+        description='[IMAGE 0] First overlay image (.png/.jpg).',
     ),
     image_file_1: Optional[UploadFile] = File(
         None,
-        description='[IMAGE 1] Second overlay image (.png/.jpg). Reference in data with "index": 1',
+        description='[IMAGE 1] Second overlay image (.png/.jpg).',
     ),
     image_file_2: Optional[UploadFile] = File(
         None,
-        description='[IMAGE 2] Third overlay image (.png/.jpg). Reference in data with "index": 2',
+        description='[IMAGE 2] Third overlay image (.png/.jpg).',
     ),
 
     # ── Video overlay file ────────────────────────────────────────────────
@@ -201,7 +185,6 @@ async def process_video(
         None,
         description=(
             "[VIDEO OVERLAY] Upload the overlay video (.mp4). "
-            "Required when the `video_overlay` section is present in `data` and no `video_overlay.url` is given."
         ),
     ),
 
@@ -216,9 +199,6 @@ async def process_video(
         "{}",
         description=(
             "JSON string containing all structured options. "
-            "All keys are optional. "
-            "Keys: screen_resolution, srt, image_overlays, video_overlay, audio. "
-            "Pass `{}` or omit to apply no processing beyond returning the base video."
         ),
     ),
 ):
@@ -275,53 +255,35 @@ async def process_video(
     logger.info("[PROCESS] Request received | tmp=%s", tmp)
     logger.info("[PROCESS] Parsed options: %s", opts.model_dump(exclude_none=True))
     try:
-        logger.info("[PROCESS] Resolving base video...")
         current = await resolve_file(video, video_url, tmp, "base.mp4", "video")
-        logger.info("[PROCESS] Base video saved -> %s", current)
+        logger.info("[PROCESS] Base video ready")
 
         # ── SCREEN RESOLUTION ─────────────────────────────────────────────
         if opts.screen_resolution is not None:
-            logger.info("[PROCESS] Resizing to %dx%d...",
-                        opts.screen_resolution.width, opts.screen_resolution.height)
             scaled = os.path.join(tmp, "scaled.mp4")
             await rescale_video(current, scaled,
                                 opts.screen_resolution.width,
                                 opts.screen_resolution.height)
             current = scaled
-            logger.info("[PROCESS] Resize done -> %s", current)
-        else:
-            logger.info("[PROCESS] No resize requested, keeping source resolution.")
+            logger.info("[PROCESS] Resized to %dx%d", opts.screen_resolution.width, opts.screen_resolution.height)
 
         # ── Determine actual output canvas size via ffprobe ───────────────
-        # If screen_resolution was given, use it; otherwise probe the file.
         if opts.screen_resolution is not None:
             out_w = opts.screen_resolution.width
             out_h = opts.screen_resolution.height
         else:
-            logger.info("[PROCESS] Probing video dimensions with ffprobe...")
             out_w, out_h = await get_video_dimensions(current)
-
-        logger.info("[PROCESS] Output canvas size: %dx%d", out_w, out_h)
+            logger.info("[PROCESS] Detected dimensions: %dx%d", out_w, out_h)
 
         # ── SRT — resolve & validate early, burn LAST ─────────────────────
         srt_path = None
         ass_path = None
         if opts.srt is not None:
             srt_section = opts.srt
-            logger.info("[PROCESS] SRT section detected | style=%s font=%s size=%s",
-                        srt_section.style, srt_section.font_name, srt_section.font_size)
-
-            srt_has_upload = _has_file(srt_file)
-            logger.info("[PROCESS] SRT source: %s",
-                        "uploaded file" if srt_has_upload else f"URL={srt_section.url}")
             srt_path = await resolve_file(
-                srt_file if srt_has_upload else None,
-                srt_section.url,
-                tmp,
-                "subtitles.srt",
-                "srt_file / srt.url",
+                srt_file if _has_file(srt_file) else None,
+                srt_section.url, tmp, "subtitles.srt", "srt_file / srt.url",
             )
-            logger.info("[PROCESS] SRT file saved -> %s", srt_path)
 
             if srt_section.font_name not in VALID_FONTS:
                 raise HTTPException(
@@ -337,24 +299,15 @@ async def process_video(
                 )
 
             ass_path = os.path.join(tmp, "subtitles.ass")
-            logger.info("[PROCESS] Generating ASS file with style class: %s (canvas %dx%d)",
-                        style_cls.__name__, out_w, out_h)
             style_cls(
                 font_name=srt_section.font_name,
                 font_size=srt_section.font_size,
             ).generate_ass(srt_path, ass_path, width=out_w, height=out_h)
-            logger.info("[PROCESS] ASS file generated -> %s", ass_path)
-        else:
-            logger.info("[PROCESS] No SRT section in request, skipping subtitles.")
+            logger.info("[PROCESS] SRT ready | style=%s", srt_section.style)
 
-        # ── IMAGE OVERLAYS (applied before subtitles so text is on top) ───
+        # ── IMAGE OVERLAYS ────────────────────────────────────────────────
         if opts.image_overlays:
-            logger.info("[PROCESS] Applying %d image overlay(s)...", len(opts.image_overlays))
             for idx, item in enumerate(opts.image_overlays):
-                logger.info("[PROCESS] Image overlay [%d] | source=%s position=%s width=%s",
-                            idx,
-                            f"index:{item.index}" if item.index is not None else f"url:{item.url}",
-                            item.position, item.width)
                 if item.index is not None:
                     if item.index >= len(image_files):
                         raise HTTPException(
@@ -364,110 +317,83 @@ async def process_video(
                                 f"Only {len(image_files)} file(s) were uploaded."
                             ),
                         )
-                    uploaded = image_files[item.index]
+                    # Use the original extension if possible
+                    orig_ext = Path(image_files[item.index].filename).suffix or ".png"
                     img_path = await resolve_file(
-                        uploaded, None, tmp, f"overlay_img_{idx}", "image_files"
+                        image_files[item.index], None, tmp, f"overlay_img_{idx}{orig_ext}", "image_files"
                     )
                 elif item.url:
+                    
+                    # Resolve from URL usually handles extension in download_url, but resolve_file forces saved_name
+                    # We'll pass a name with extension
+                    url_ext = Path(item.url.split("?")[0]).suffix or ".png"
+                    logger.info("[PROCESS] Image overlay from URL")
                     img_path = await resolve_file(
-                        None, item.url, tmp, f"overlay_img_{idx}", "image_overlays.url"
+                        None, item.url, tmp, f"overlay_img_{idx}{url_ext}", "image_overlays.url"
                     )
                 else:
+                   
                     raise HTTPException(
                         status_code=400,
-                        detail=(
-                            f"image_overlays[{idx}] must provide either 'url' or 'index'. "
-                            "Neither was given."
-                        ),
+                        detail=f"image_overlays[{idx}] must provide either 'url' or 'index'.",
                     )
-                logger.info("[PROCESS] Image overlay [%d] file saved -> %s", idx, img_path)
 
                 ox, oy, fullscreen = _resolve_pos(item.position, item.x, item.y)
                 img_out = os.path.join(tmp, f"after_image_{idx}.mp4")
+                logger.info("overlay")
                 await overlay_image(
-                    video_path=current,
-                    image_path=img_path,
-                    output_path=img_out,
+                    video_path=current, image_path=img_path, output_path=img_out,
                     x=ox, y=oy, width=item.width,
-                    start_time=item.start_time,
-                    end_time=item.end_time,
-                    fullscreen=fullscreen,
+                    start_time=item.start_time, end_time=item.end_time, fullscreen=fullscreen,
+                    target_width=opts.screen_resolution.width,
+                    target_height=opts.screen_resolution.height,
                 )
                 current = img_out
-                logger.info("[PROCESS] Image overlay [%d] applied -> %s", idx, current)
-        else:
-            logger.info("[PROCESS] No image overlays requested.")
+            logger.info("[PROCESS] Image overlays done (%d)", len(opts.image_overlays))
 
-        # ── VIDEO OVERLAY (applied before subtitles so text is on top) ────
+        # ── VIDEO OVERLAY ─────────────────────────────────────────────────
         if opts.video_overlay is not None:
             vo = opts.video_overlay
-            logger.info("[PROCESS] Applying video overlay | source=%s position=%s",
-                        vo.url or "uploaded file", vo.position)
             ovr_path = await resolve_file(
                 overlay_file if _has_file(overlay_file) else None,
-                vo.url,
-                tmp,
-                "overlay.mp4",
-                "overlay_file / video_overlay.url",
+                vo.url, tmp, "overlay.mp4", "overlay_file / video_overlay.url",
             )
-            logger.info("[PROCESS] Video overlay file saved -> %s", ovr_path)
             ox, oy, fullscreen = _resolve_pos(vo.position, vo.x, vo.y)
-
             ovr_out = os.path.join(tmp, "after_overlay.mp4")
             await overlay_video(
-                base_path=current,
-                overlay_path=ovr_path,
-                output_path=ovr_out,
+                base_path=current, overlay_path=ovr_path, output_path=ovr_out,
                 x=ox, y=oy, width=vo.overlay_width,
-                start_time=vo.start_time,
-                end_time=vo.end_time,
-                fullscreen=fullscreen,
+                start_time=vo.start_time, end_time=vo.end_time, fullscreen=fullscreen,
             )
             current = ovr_out
-            logger.info("[PROCESS] Video overlay applied -> %s", current)
-        else:
-            logger.info("[PROCESS] No video overlay requested.")
+            logger.info("[PROCESS] Video overlay done")
 
         # ── AUDIO ─────────────────────────────────────────────────────────
         if opts.audio is not None:
             au = opts.audio
-            audio_has_upload = _has_file(audio_file)
-            logger.info("[PROCESS] Audio section detected | mode=%s source=%s",
-                        au.mode, "uploaded file" if audio_has_upload else f"URL={au.url}")
             aud_path = await resolve_file(
-                audio_file if audio_has_upload else None,
-                au.url,
-                tmp,
-                "audio_track",
-                "audio_file / audio.url",
+                audio_file if _has_file(audio_file) else None,
+                au.url, tmp, "audio_track", "audio_file / audio.url",
             )
-            logger.info("[PROCESS] Audio file saved -> %s", aud_path)
             aud_out = os.path.join(tmp, "after_audio.mp4")
             await mix_audio(
-                video_path=current,
-                audio_path=aud_path,
-                output_path=aud_out,
-                mode=au.mode,
-                audio_volume=au.audio_volume,
-                video_volume=au.video_volume,
+                video_path=current, audio_path=aud_path, output_path=aud_out,
+                mode=au.mode, audio_volume=au.audio_volume, video_volume=au.video_volume,
             )
             current = aud_out
-            logger.info("[PROCESS] Audio applied -> %s", current)
-        else:
-            logger.info("[PROCESS] No audio section requested.")
+            logger.info("[PROCESS] Audio done | mode=%s", au.mode)
 
         # ── SRT BURN — done LAST so subtitles appear on top of everything ──
         if ass_path is not None:
             srt_out = os.path.join(tmp, "after_srt.mp4")
-            logger.info("[PROCESS] Burning subtitles into video (final layer)...")
             await burn_subtitles(current, ass_path, srt_out)
             current = srt_out
-            logger.info("[PROCESS] Subtitles burned -> %s", current)
+            logger.info("[PROCESS] Subtitles burned")
 
         # ── Final output ──────────────────────────────────────────────────
         out_path = make_output_path("process")
         os.rename(current, out_path)
-        logger.info("[PROCESS] Done! Output saved -> %s", out_path)
+        logger.info("[PROCESS] Done -> %s", out_path)
 
     except HTTPException:
         cleanup(tmp)
