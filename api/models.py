@@ -1,9 +1,4 @@
-"""
-Pydantic models for the unified /process endpoint.
 
-All sections (srt, image_overlays, video_overlay) are optional.
-Omit any section you don't need.  The base video is always required.
-"""
 from typing import List, Optional
 from pydantic import BaseModel, Field
 
@@ -13,7 +8,6 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 class ScreenResolution(BaseModel):
-    """Output video resolution. Omit to keep source resolution."""
 
     width: int = Field(1920, gt=0, description="Output width in pixels (e.g. 1920)")
     height: int = Field(1080, gt=0, description="Output height in pixels (e.g. 1080)")
@@ -24,16 +18,6 @@ class ScreenResolution(BaseModel):
 # ---------------------------------------------------------------------------
 
 class SRTSection(BaseModel):
-    """
-    Subtitle-burning section.
-
-    Supply the SRT file via one of:
-      - `url`      — publicly accessible URL to an .srt file
-      - `srt_file` — upload field in the multipart request
-
-    The `style` / `animation_style` fields are interchangeable — use whichever
-    is clearer for your client.
-    """
 
     url: Optional[str] = Field(None, description="Public URL to an .srt subtitle file")
     style: str = Field(
@@ -56,14 +40,6 @@ POSITION_CHOICES = "top-left | top-right | bottom-left | bottom-right | center |
 
 
 class ImageOverlayItem(BaseModel):
-    """
-    A single image overlay entry.
-
-    Supply the image via ONE of:
-      - `url`   — publicly accessible URL (.png / .jpg)
-      - `index` — zero-based index into the `image_files` upload list
-
-    """
 
     url: Optional[str] = Field(
         None,
@@ -95,13 +71,6 @@ class ImageOverlayItem(BaseModel):
 # ---------------------------------------------------------------------------
 
 class VideoOverlaySection(BaseModel):
-    """
-    Video-on-video overlay section.
-
-    Supply the overlay clip via one of:
-      - `url`          — publicly accessible URL to an .mp4 file
-      - `overlay_file` — upload field in the multipart request
-    """
 
     url: Optional[str] = Field(None, description="Public URL to the overlay video (.mp4)")
     position: str = Field(
@@ -122,18 +91,6 @@ class VideoOverlaySection(BaseModel):
 # ---------------------------------------------------------------------------
 
 class AudioSection(BaseModel):
-    """
-    Audio replace / mix section.
-
-    Supply the audio track via one of:
-      - `url`        — publicly accessible URL (.mp3 / .wav / .aac)
-      - `audio_file` — upload field in the multipart request
-
-    modes:
-      - `replace` — discard original video audio, use provided track
-      - `mix`     — blend both tracks together
-    """
-
     url: Optional[str] = Field(None, description="Public URL to the audio file (.mp3/.wav/.aac)")
     mode: str = Field(
         "replace",
@@ -152,18 +109,6 @@ class AudioSection(BaseModel):
 
 class ProcessRequest(BaseModel):
     """
-    Structured options for POST /process.
-
-    Send this as a JSON string in the `data` multipart form field.
-    Upload files separately via `video`, `srt_file`, `image_files`, and
-    `overlay_file` form fields.
-
-    All sections are optional — include only what you need.
-    The base video is always required (either uploaded or via `video_url`).
-
-    Minimal example (video only, no options):
-        data={}
-
     Full example:
     {
         "screen_resolution": { "width": 1280, "height": 720 },

@@ -6,8 +6,9 @@ Request format — multipart/form-data
   video           UploadFile  (required if video_url omitted)
   video_url       str         (required if video omitted)
   srt_file        UploadFile  (required if srt.url omitted and srt section present)
-  image_files     UploadFile  (0..N files; matched to image_overlays[*].index)
+  image_file_0/1/2 UploadFile (matched to image_overlays[*].index)
   overlay_file    UploadFile  (required if video_overlay.url omitted and section present)
+  audio_file      UploadFile  (required if audio.url omitted and audio section present)
   data            str         JSON string with all structured options (see ProcessRequest)
 
 All sections inside `data` are optional.  Omit any section you don't need.
@@ -16,17 +17,19 @@ All sections inside `data` are optional.  Omit any section you don't need.
 import json
 import logging
 import os
+from pathlib import Path
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 from api.config import DEFAULT_FONT, VALID_FONTS
 from api.helpers.ffmpeg import (
     burn_subtitles,
+    get_video_dimensions,
     mix_audio,
     overlay_image,
     overlay_video,
@@ -38,6 +41,7 @@ from api.helpers.temp import (
     make_temp_dir,
     resolve_file,
 )
+from api.helpers.url_validator import validate_url
 from api.models import ProcessRequest
 from styles.basic_style import BasicStyle
 from styles.color_word_style import ColorWordStyle
@@ -70,6 +74,15 @@ POSITION_PRESETS = {
 }
 POSITION_HELP = "top-left | top-right | bottom-left | bottom-right | center | fullscreen | custom"
 
+# Allowed file extensions per upload type
+ALLOWED_VIDEO = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+ALLOWED_IMAGE = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+ALLOWED_AUDIO = {".mp3", ".wav", ".aac", ".ogg", ".m4a", ".flac"}
+ALLOWED_SRT   = {".srt"}
+
+# Max upload size per file
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "500"))
+
 router = APIRouter(prefix="/process", tags=["Process"])
 
 
@@ -97,13 +110,40 @@ def _has_file(f: Optional[UploadFile]) -> bool:
     return f is not None and bool(f.filename)
 
 
+def _check_extension(upload: UploadFile, allowed: set[str], label: str) -> None:
+    """Raise 400 if the uploaded file's extension is not in `allowed`."""
+    ext = Path(upload.filename).suffix.lower()
+    if ext not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{label}: file type '{ext}' is not allowed. "
+                f"Accepted: {', '.join(sorted(allowed))}"
+            ),
+        )
+
+
+def _check_size(upload: UploadFile, label: str, max_mb: int = MAX_UPLOAD_MB) -> None:
+    """Raise 413 if the upload content-length header exceeds max_mb.
+
+    Note: content-length is not always present; when absent, no check is done
+    (the actual data still flows through, this is best-effort early rejection).
+    """
+    size = getattr(upload, "size", None)
+    if size is not None and size > max_mb * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{label}: file size exceeds the {max_mb} MB limit.",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
 
 @router.post(
     "",
-    summary="Process a video — combine any of: subtitles, image overlays, video overlay",
+    summary="Process a video — combine any of: subtitles, image overlays, video overlay, audio",
     response_description="Processed MP4 output",
     description="""
 Send a **multipart/form-data** request with these fields:
@@ -120,38 +160,6 @@ Send a **multipart/form-data** request with these fields:
 | `audio_file` | file | Audio track (.mp3/.wav/.aac) *(required when audio section present and no audio.url)* |
 | `data` | JSON string | All structured options — see **ProcessRequest** model below |
 
-### Minimal `data` (video only)
-```json
-{}
-```
-
-### Full `data` example
-```json
-{
-  "screen_resolution": {"width": 1280, "height": 720},
-  "srt": {
-    "url": "https://example.com/subtitles.srt",
-    "style": "elevate",
-    "font_name": "Noto Sans Telugu",
-    "font_size": 70
-  },
-  "image_overlays": [
-    {"url": "https://example.com/logo.png", "position": "top-right", "width": 200},
-    {"index": 0, "position": "bottom-left", "width": 100, "start_time": 5, "end_time": 30}
-  ],
-  "video_overlay": {
-    "url": "https://example.com/overlay.mp4",
-    "position": "bottom-right",
-    "overlay_width": 300
-  },
-  "audio": {
-    "url": "https://example.com/bg-music.mp3",
-    "mode": "mix",
-    "audio_volume": 0.5,
-    "video_volume": 1.0
-  }
-}
-```
 """,
 )
 async def process_video(
@@ -177,15 +185,15 @@ async def process_video(
     # ── Image overlay file slots (index 0–2 ─ reference via image_overlays[].index) ──
     image_file_0: Optional[UploadFile] = File(
         None,
-        description="[IMAGE 0] First overlay image (.png/.jpg). Reference in data with \"index\": 0",
+        description='[IMAGE 0] First overlay image (.png/.jpg). Reference in data with "index": 0',
     ),
     image_file_1: Optional[UploadFile] = File(
         None,
-        description="[IMAGE 1] Second overlay image (.png/.jpg). Reference in data with \"index\": 1",
+        description='[IMAGE 1] Second overlay image (.png/.jpg). Reference in data with "index": 1',
     ),
     image_file_2: Optional[UploadFile] = File(
         None,
-        description="[IMAGE 2] Third overlay image (.png/.jpg). Reference in data with \"index\": 2",
+        description='[IMAGE 2] Third overlay image (.png/.jpg). Reference in data with "index": 2',
     ),
 
     # ── Video overlay file ────────────────────────────────────────────────
@@ -197,13 +205,10 @@ async def process_video(
         ),
     ),
 
-    # ── Audio file ────────────────────────────────────────────────────
+    # ── Audio file ────────────────────────────────────────────────────────
     audio_file: Optional[UploadFile] = File(
         None,
-        description=(
-            "[AUDIO] Upload the audio track (.mp3 / .wav / .aac). "
-            "Required when the `audio` section is present in `data`"
-        ),
+        description="[AUDIO] Upload the audio track (.mp3 / .wav / .aac).",
     ),
 
     # ── Structured JSON options ───────────────────────────────────────────
@@ -217,7 +222,21 @@ async def process_video(
         ),
     ),
 ):
-    # ── Collect image upload slots into a list (None slots are skipped) ───────
+    # ── File type validation ──────────────────────────────────────────────
+    if _has_file(video):        _check_extension(video,        ALLOWED_VIDEO, "video")
+    if _has_file(srt_file):     _check_extension(srt_file,     ALLOWED_SRT,   "srt_file")
+    if _has_file(image_file_0): _check_extension(image_file_0, ALLOWED_IMAGE, "image_file_0")
+    if _has_file(image_file_1): _check_extension(image_file_1, ALLOWED_IMAGE, "image_file_1")
+    if _has_file(image_file_2): _check_extension(image_file_2, ALLOWED_IMAGE, "image_file_2")
+    if _has_file(overlay_file): _check_extension(overlay_file, ALLOWED_VIDEO, "overlay_file")
+    if _has_file(audio_file):   _check_extension(audio_file,   ALLOWED_AUDIO, "audio_file")
+
+    # ── File size validation ──────────────────────────────────────────────
+    if _has_file(video):        _check_size(video,        "video")
+    if _has_file(overlay_file): _check_size(overlay_file, "overlay_file")
+    if _has_file(audio_file):   _check_size(audio_file,   "audio_file")
+
+    # ── Collect image upload slots into a list (None slots are skipped) ───
     image_files: List[UploadFile] = [
         f for f in [image_file_0, image_file_1, image_file_2]
         if _has_file(f)
@@ -231,6 +250,19 @@ async def process_video(
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Invalid options in `data`: {e}")
 
+    # ── SSRF validation on all user-supplied URLs ─────────────────────────
+    if video_url:
+        validate_url(video_url, "video_url")
+    if opts.srt and opts.srt.url:
+        validate_url(opts.srt.url, "srt.url")
+    if opts.image_overlays:
+        for i, item in enumerate(opts.image_overlays):
+            if item.url:
+                validate_url(item.url, f"image_overlays[{i}].url")
+    if opts.video_overlay and opts.video_overlay.url:
+        validate_url(opts.video_overlay.url, "video_overlay.url")
+    if opts.audio and opts.audio.url:
+        validate_url(opts.audio.url, "audio.url")
 
     # ── Require base video ────────────────────────────────────────────────
     if not _has_file(video) and not video_url:
@@ -247,19 +279,32 @@ async def process_video(
         current = await resolve_file(video, video_url, tmp, "base.mp4", "video")
         logger.info("[PROCESS] Base video saved -> %s", current)
 
-        # ── SCREEN RESOLUTION ───────────────────────────────────────────────────
+        # ── SCREEN RESOLUTION ─────────────────────────────────────────────
         if opts.screen_resolution is not None:
-            logger.info("[PROCESS] Resizing to %dx%d...", opts.screen_resolution.width, opts.screen_resolution.height)
+            logger.info("[PROCESS] Resizing to %dx%d...",
+                        opts.screen_resolution.width, opts.screen_resolution.height)
             scaled = os.path.join(tmp, "scaled.mp4")
-            rescale_video(current, scaled, opts.screen_resolution.width, opts.screen_resolution.height)
+            await rescale_video(current, scaled,
+                                opts.screen_resolution.width,
+                                opts.screen_resolution.height)
             current = scaled
             logger.info("[PROCESS] Resize done -> %s", current)
         else:
             logger.info("[PROCESS] No resize requested, keeping source resolution.")
 
-        # ── SRT — resolve & validate early, burn LAST ────────────────────
+        # ── Determine actual output canvas size via ffprobe ───────────────
+        # If screen_resolution was given, use it; otherwise probe the file.
+        if opts.screen_resolution is not None:
+            out_w = opts.screen_resolution.width
+            out_h = opts.screen_resolution.height
+        else:
+            logger.info("[PROCESS] Probing video dimensions with ffprobe...")
+            out_w, out_h = await get_video_dimensions(current)
+
+        logger.info("[PROCESS] Output canvas size: %dx%d", out_w, out_h)
+
+        # ── SRT — resolve & validate early, burn LAST ─────────────────────
         srt_path = None
-        style_cls = None
         ass_path = None
         if opts.srt is not None:
             srt_section = opts.srt
@@ -267,7 +312,8 @@ async def process_video(
                         srt_section.style, srt_section.font_name, srt_section.font_size)
 
             srt_has_upload = _has_file(srt_file)
-            logger.info("[PROCESS] SRT source: %s", "uploaded file" if srt_has_upload else f"URL={srt_section.url}")
+            logger.info("[PROCESS] SRT source: %s",
+                        "uploaded file" if srt_has_upload else f"URL={srt_section.url}")
             srt_path = await resolve_file(
                 srt_file if srt_has_upload else None,
                 srt_section.url,
@@ -291,16 +337,17 @@ async def process_video(
                 )
 
             ass_path = os.path.join(tmp, "subtitles.ass")
-            logger.info("[PROCESS] Generating ASS file with style class: %s", style_cls.__name__)
+            logger.info("[PROCESS] Generating ASS file with style class: %s (canvas %dx%d)",
+                        style_cls.__name__, out_w, out_h)
             style_cls(
                 font_name=srt_section.font_name,
                 font_size=srt_section.font_size,
-            ).generate_ass(srt_path, ass_path)
+            ).generate_ass(srt_path, ass_path, width=out_w, height=out_h)
             logger.info("[PROCESS] ASS file generated -> %s", ass_path)
         else:
             logger.info("[PROCESS] No SRT section in request, skipping subtitles.")
 
-        # ── IMAGE OVERLAYS (applied before subtitles so text is on top) ──
+        # ── IMAGE OVERLAYS (applied before subtitles so text is on top) ───
         if opts.image_overlays:
             logger.info("[PROCESS] Applying %d image overlay(s)...", len(opts.image_overlays))
             for idx, item in enumerate(opts.image_overlays):
@@ -314,15 +361,10 @@ async def process_video(
                             status_code=400,
                             detail=(
                                 f"image_overlays[{idx}].index={item.index} is out of range. "
-                                f"Only {len(image_files)} file(s) were uploaded in image_files."
+                                f"Only {len(image_files)} file(s) were uploaded."
                             ),
                         )
                     uploaded = image_files[item.index]
-                    if not _has_file(uploaded):
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"image_files[{item.index}] appears to be empty.",
-                        )
                     img_path = await resolve_file(
                         uploaded, None, tmp, f"overlay_img_{idx}", "image_files"
                     )
@@ -342,7 +384,7 @@ async def process_video(
 
                 ox, oy, fullscreen = _resolve_pos(item.position, item.x, item.y)
                 img_out = os.path.join(tmp, f"after_image_{idx}.mp4")
-                overlay_image(
+                await overlay_image(
                     video_path=current,
                     image_path=img_path,
                     output_path=img_out,
@@ -356,7 +398,7 @@ async def process_video(
         else:
             logger.info("[PROCESS] No image overlays requested.")
 
-        # ── VIDEO OVERLAY (applied before subtitles so text is on top) ───
+        # ── VIDEO OVERLAY (applied before subtitles so text is on top) ────
         if opts.video_overlay is not None:
             vo = opts.video_overlay
             logger.info("[PROCESS] Applying video overlay | source=%s position=%s",
@@ -372,7 +414,7 @@ async def process_video(
             ox, oy, fullscreen = _resolve_pos(vo.position, vo.x, vo.y)
 
             ovr_out = os.path.join(tmp, "after_overlay.mp4")
-            overlay_video(
+            await overlay_video(
                 base_path=current,
                 overlay_path=ovr_path,
                 output_path=ovr_out,
@@ -386,7 +428,7 @@ async def process_video(
         else:
             logger.info("[PROCESS] No video overlay requested.")
 
-        # ── AUDIO — applied after all video processing ─────────────────────────
+        # ── AUDIO ─────────────────────────────────────────────────────────
         if opts.audio is not None:
             au = opts.audio
             audio_has_upload = _has_file(audio_file)
@@ -401,7 +443,7 @@ async def process_video(
             )
             logger.info("[PROCESS] Audio file saved -> %s", aud_path)
             aud_out = os.path.join(tmp, "after_audio.mp4")
-            mix_audio(
+            await mix_audio(
                 video_path=current,
                 audio_path=aud_path,
                 output_path=aud_out,
@@ -414,19 +456,18 @@ async def process_video(
         else:
             logger.info("[PROCESS] No audio section requested.")
 
-        # ── SRT BURN — done LAST so subtitles appear on top of everything ─
+        # ── SRT BURN — done LAST so subtitles appear on top of everything ──
         if ass_path is not None:
             srt_out = os.path.join(tmp, "after_srt.mp4")
             logger.info("[PROCESS] Burning subtitles into video (final layer)...")
-            burn_subtitles(current, ass_path, srt_out)
+            await burn_subtitles(current, ass_path, srt_out)
             current = srt_out
             logger.info("[PROCESS] Subtitles burned -> %s", current)
 
         # ── Final output ──────────────────────────────────────────────────
         out_path = make_output_path("process")
         os.rename(current, out_path)
-        logger.info("[PROCESS] ✓ Done! Output saved -> %s", out_path)
-
+        logger.info("[PROCESS] Done! Output saved -> %s", out_path)
 
     except HTTPException:
         cleanup(tmp)

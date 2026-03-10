@@ -1,47 +1,126 @@
+"""
+FFmpeg helper functions — all async so they don't block the event loop.
+
+Every function that wraps an ffmpeg/ffprobe call is `async def` and must
+be called with `await` from the router.
+"""
+
+import asyncio
+import json
 import logging
-import subprocess
 import os
 
 logger = logging.getLogger(__name__)
 
+# Maximum seconds to wait for any single FFmpeg/ffprobe command.
+FFMPEG_TIMEOUT = int(os.getenv("FFMPEG_TIMEOUT", "600"))
 
-def run_ffmpeg(cmd: list[str]):
-    """Run an ffmpeg command, raising RuntimeError on failure."""
+
+async def run_ffmpeg(cmd: list[str], timeout: int = FFMPEG_TIMEOUT) -> None:
+    """Run an FFmpeg command asynchronously.
+
+    - Does NOT block the event loop (uses asyncio subprocess).
+    - Raises RuntimeError with stderr on non-zero exit.
+    - Raises asyncio.TimeoutError (caught by router as 500) if command hangs.
+    """
     logger.info("[FFMPEG] Running: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error("[FFMPEG] FAILED (exit %d):\n%s", result.returncode, result.stderr)
-        raise RuntimeError(f"FFmpeg failed:\n{result.stderr}")
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise RuntimeError(f"FFmpeg timed out after {timeout}s. Command: {' '.join(cmd)}")
+
+    stderr_text = stderr.decode(errors="replace")
+    if proc.returncode != 0:
+        logger.error("[FFMPEG] FAILED (exit %d):\n%s", proc.returncode, stderr_text)
+        raise RuntimeError(f"FFmpeg failed (exit {proc.returncode}):\n{stderr_text}")
+
     logger.info("[FFMPEG] Success (exit 0)")
-    if result.stderr:
-        logger.debug("[FFMPEG] stderr: %s", result.stderr[-500:])
+    if stderr_text:
+        logger.debug("[FFMPEG] stderr: %s", stderr_text[-500:])
 
 
-def rescale_video(input_path: str, output_path: str, width: int, height: int):
-    """Rescale a video to exact width×height pixels."""
-    run_ffmpeg([
+async def get_video_dimensions(video_path: str) -> tuple[int, int]:
+    """Return (width, height) of a video file using ffprobe.
+
+    Used to detect actual video dimensions when the caller has not explicitly
+    specified a target resolution — ensures the ASS subtitle canvas matches
+    the real video size.
+    """
+    cmd = [
+        "ffprobe", "-v", "quiet",
+        "-print_format", "json",
+        "-show_streams",
+        video_path,
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise RuntimeError("ffprobe timed out while reading video dimensions.")
+
+    try:
+        data = json.loads(stdout.decode())
+    except json.JSONDecodeError:
+        raise RuntimeError("ffprobe returned invalid JSON — cannot determine video dimensions.")
+
+    for stream in data.get("streams", []):
+        if stream.get("codec_type") == "video":
+            return int(stream["width"]), int(stream["height"])
+
+    raise RuntimeError(f"ffprobe could not find a video stream in: {video_path}")
+
+
+def _escape_ass_path(path: str) -> str:
+    """Escape an ASS file path for use inside an FFmpeg filter string.
+
+    FFmpeg's `ass=` filter uses a colon as option separator, so colons in
+    the path (common on Windows or after drive letters) must be escaped.
+    Backslashes must also be normalised to forward slashes first.
+    """
+    return os.path.abspath(path).replace("\\", "/").replace(":", "\\:")
+
+
+async def rescale_video(input_path: str, output_path: str, width: int, height: int) -> None:
+    """Rescale a video to exact width×height pixels.
+
+    setsar=1 resets the sample aspect ratio to 1:1 (square pixels) so
+    video players display the correct dimensions and not the source DAR.
+    """
+    await run_ffmpeg([
         "ffmpeg", "-y",
         "-i", input_path,
-        "-vf", f"scale={width}:{height}",
+        "-vf", f"scale={width}:{height},setsar=1",
         "-c:a", "copy",
         output_path,
     ])
 
 
-def burn_subtitles(video_path: str, ass_path: str, output_path: str):
-
+async def burn_subtitles(video_path: str, ass_path: str, output_path: str) -> None:
     """Hard-burn an ASS subtitle file into a video."""
-    abs_ass = os.path.abspath(ass_path)
-    run_ffmpeg([
+    escaped = _escape_ass_path(ass_path)
+    await run_ffmpeg([
         "ffmpeg", "-y",
         "-i", video_path,
-        "-vf", f"ass='{abs_ass}'",
+        "-vf", f"ass='{escaped}'",
         "-c:a", "copy",
-        output_path
+        output_path,
     ])
 
 
-def overlay_image(
+async def overlay_image(
     video_path: str,
     image_path: str,
     output_path: str,
@@ -49,9 +128,9 @@ def overlay_image(
     y: str = "10",
     width: int = 200,
     start_time: float = 0.0,
-    end_time: float = None,
+    end_time: float | None = None,
     fullscreen: bool = False,
-):
+) -> None:
     """Overlay a scaled image onto a video at a given position and time range."""
     if end_time is not None:
         enable_expr = f"between(t,{start_time},{end_time})"
@@ -69,17 +148,17 @@ def overlay_image(
             f"[0:v][img]overlay={x}:{y}:enable='{enable_expr}'"
         )
 
-    run_ffmpeg([
+    await run_ffmpeg([
         "ffmpeg", "-y",
         "-i", video_path,
         "-i", image_path,
         "-filter_complex", filter_complex,
         "-c:a", "copy",
-        output_path
+        output_path,
     ])
 
 
-def overlay_video(
+async def overlay_video(
     base_path: str,
     overlay_path: str,
     output_path: str,
@@ -87,14 +166,10 @@ def overlay_video(
     y: str = "10",
     width: int = 400,
     start_time: float = 0.0,
-    end_time: float = None,
+    end_time: float | None = None,
     fullscreen: bool = False,
-):
-    """
-    Overlay one video on top of a base video.
-    Supports fullscreen mode and timed appearance.
-    Audio comes from base video only.
-    """
+) -> None:
+    """Overlay one video on top of a base video. Audio comes from base only."""
     if end_time is not None:
         enable_expr = f"between(t,{start_time},{end_time})"
     else:
@@ -111,32 +186,31 @@ def overlay_video(
             f"[0:v][ovr]overlay={x}:{y}:enable='{enable_expr}'"
         )
 
-    run_ffmpeg([
+    await run_ffmpeg([
         "ffmpeg", "-y",
         "-i", base_path,
         "-i", overlay_path,
         "-filter_complex", filter_complex,
         "-map", "0:a?",
-        output_path
+        output_path,
     ])
 
 
-def mix_audio(
+async def mix_audio(
     video_path: str,
     audio_path: str,
     output_path: str,
     mode: str = "replace",
     audio_volume: float = 1.0,
     video_volume: float = 1.0,
-):
-    """
-    Replace or mix an audio track into a video.
+) -> None:
+    """Replace or mix an audio track into a video.
 
     mode='replace' : discard original audio, use provided audio track
     mode='mix'     : blend both audio streams together
     """
     if mode == "replace":
-        run_ffmpeg([
+        await run_ffmpeg([
             "ffmpeg", "-y",
             "-i", video_path,
             "-i", audio_path,
@@ -144,7 +218,7 @@ def mix_audio(
             "-map", "1:a",
             "-c:v", "copy",
             "-shortest",
-            output_path
+            output_path,
         ])
     else:  # mix
         filter_complex = (
@@ -152,7 +226,7 @@ def mix_audio(
             f"[1:a]volume={audio_volume}[a1];"
             f"[a0][a1]amix=inputs=2:duration=first[aout]"
         )
-        run_ffmpeg([
+        await run_ffmpeg([
             "ffmpeg", "-y",
             "-i", video_path,
             "-i", audio_path,
@@ -160,5 +234,5 @@ def mix_audio(
             "-map", "0:v",
             "-map", "[aout]",
             "-c:v", "copy",
-            output_path
+            output_path,
         ])

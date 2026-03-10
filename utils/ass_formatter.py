@@ -9,12 +9,15 @@ def format_ass_time(seconds):
     if m == 60: m = 0; h += 1
     return f"{h}:{m:02}:{s:02}.{cs:02}"
 
-def get_ass_header(font_name="Noto Sans Telugu", font_size=80):
-    """Return the standard ASS file header"""
+def get_ass_header(font_name="Noto Sans Telugu", font_size=80, width=1920, height=1080):
+    """Return the standard ASS file header.
+    Pass actual video dimensions so subtitles position correctly
+    for any resolution (portrait, square, etc.)
+    """
     return f"""[Script Info]
 ScriptType: v4.00+
-PlayResX: 1920
-PlayResY: 1080
+PlayResX: {width}
+PlayResY: {height}
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]

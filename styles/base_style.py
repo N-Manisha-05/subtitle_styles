@@ -12,10 +12,13 @@ class BaseStyle(ABC):
         """Implement animation logic here to return list of ASS events"""
         pass
 
-    def generate_ass(self, srt_path, ass_path):
-        """Orchestrate ASS file generation"""
+    def generate_ass(self, srt_path, ass_path, width=1920, height=1080):
+        """Orchestrate ASS file generation.
+        Pass width/height matching the actual output video dimensions so
+        subtitle positions (margins, alignment) are correct for any resolution.
+        """
         entries = process_srt(srt_path)
-        header = get_ass_header(self.font_name, self.font_size)
+        header = get_ass_header(self.font_name, self.font_size, width=width, height=height)
         events_header = "\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
         
         events = self.generate_events(entries)
